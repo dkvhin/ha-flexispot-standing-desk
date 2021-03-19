@@ -2,11 +2,9 @@ import machine
 import flexispot
 
 def main():
-    f = flexispot.ControlPanel(publish_discovery=False, debug=True)
-    for i in range(3):
-        f.query_height()
-
-    machine.deepsleep(3 * 60 * 1000)
+    f = flexispot.ControlPanel(publish_discovery=False, debug=False)
+    f.listen_mqtt()
+    
        
 if __name__ == '__main__':
     main()

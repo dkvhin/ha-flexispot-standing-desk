@@ -2,22 +2,26 @@ import network
 import json
 import machine
 import time
+import _thread
 from machine import UART, Pin
 from umqttsimple import MQTTClient
 
 class ControlPanel:
-    WIFI_SSID = "<YOUR SSID>"
-    WIFI_PASS = "<YOUR PASS>"
+    WIFI_SSID = "WIFI_SSID"
+    WIFI_PASS = "WIFI_PASS"
 
     MQTT_CLIENT_ID = "flexispot"
-    MQTT_SERVER = "<MQTT SERVER>"
-    MQTT_TOPIC_DISCOVERY = "homeassistant/sensor/standingdesk/config"
-    MQTT_TOPIC_STATE = "homeassistant/sensor/standingdesk/state"
-    MQTT_TOPIC_CMD = "homeassistant/sensor/standingdesk/set"
-
+    MQTT_SERVER = "MQTT_SERVER"
+    MQTT_TOPIC_DISCOVERY = "standingdesk/config"
+    MQTT_TOPIC_STATE = "standingdesk/state"
+    MQTT_TOPIC_CMD = "standingdesk/set"
+    MQTT_USERNAME = "MQTT_USERNAME"
+    MQTT_PASSWORD = "MQTT_PASSWORD"
+    MQTT_PORT = 1883
     UART_ID = 2
     READ_PIN_ID = 18
-
+    HEIGHT_CACHE = 0
+    
     def __init__(self, publish_discovery = True, debug = False):
         self.debug = debug
 
@@ -29,6 +33,7 @@ class ControlPanel:
         self.wlan = self.connect_to_wlan()
         self.log("waiting for wlan connection")
         while not self.wlan.isconnected():
+            self.log("...")
             time.sleep(1)
         
         self.log("Connecting to MQTT")
@@ -39,6 +44,8 @@ class ControlPanel:
 
         self.read_pin = Pin(self.READ_PIN_ID, Pin.OUT)
         self.read_pin.value(1)
+        
+        self.log("Init Completed")
     
     def connect_to_wlan(self):
         wlan = network.WLAN(network.STA_IF) 
@@ -47,13 +54,14 @@ class ControlPanel:
         return wlan
     
     def connect_to_mqtt(self, publish_discovery):
-        client = MQTTClient(self.MQTT_CLIENT_ID, self.MQTT_SERVER)
+        client = MQTTClient(self.MQTT_CLIENT_ID, self.MQTT_SERVER, self.MQTT_PORT, self.MQTT_USERNAME, self.MQTT_PASSWORD)
         client.connect()
 
         client.set_callback(self.on_mqtt_msg)
         client.subscribe(self.MQTT_TOPIC_CMD)
 
         if publish_discovery:
+            self.log("MQTT discovery publishing")
             discovery = {
                 "name": "standingdesk",
                 "state_topic": self.MQTT_TOPIC_STATE,
@@ -88,15 +96,21 @@ class ControlPanel:
             return 8
         elif s[0] and s[1] and s[2] and s[3] and not s[4] and s[5] and s[6]:
             return 9
-        
+       
         raise ValueError("unknown digit")
     
     def has_decimal_point(self, b):
         return (b & 0x80) == 0x80
     
-    def query_height(self):        
-        while(True):
-            self.cmd_no_button()
+    def query_height(self):
+    
+        while True:
+
+            if not self.wlan.isconnected():
+                machine.reset()
+                return
+
+            #self.cmd_no_button()
             s = self.serial.read(1)
             if s != None:
                 while s != None and s[0] != 0x9b:
@@ -113,9 +127,12 @@ class ControlPanel:
                         if self.has_decimal_point(msg[2]):
                             height = height / 10.0
                         self.log("sending")
-                        self.mqtt.publish(self.MQTT_TOPIC_STATE, str(height))
-                        return height
-                    except ValueError:
+                        if( self.HEIGHT_CACHE != height):
+                            self.mqtt.publish(self.MQTT_TOPIC_STATE, str(height))
+                            self.HEIGHT_CACHE = height
+                        #return height
+                    except ValueError as e:
+                        print(e)
                         print("error")
                         print(msg)
                 else:
@@ -125,8 +142,12 @@ class ControlPanel:
     
     def listen_mqtt(self):
         self.log("Start listening to mqtt commands")
+        _thread.start_new_thread(self.query_height, ())
         while True:
-            self.mqtt.wait_msg()
+            if not self.wlan.isconnected():
+                machine.reset()
+            else:
+                self.mqtt.wait_msg()
 
     def on_mqtt_msg(self, topic, msg):
         if topic == b''+self.MQTT_TOPIC_CMD:
